@@ -10,7 +10,8 @@
 #define HB (HA - HC + 1)
 #define CHANNEL_SIZE 3
 
-__global__ void Convolution(float* A, float* B, float* C)
+
+__global__ void conv_flat(float* A, float* B, float* C)
 {
 	int col = blockIdx.x * (BLOCK_SIZE - WC + 1) + threadIdx.x;
 	int row = blockIdx.y * (BLOCK_SIZE - WC + 1) + threadIdx.y;
@@ -23,36 +24,54 @@ __global__ void Convolution(float* A, float* B, float* C)
 
 	if (row_i < WA && row_i >= 0 && col_i < WA && col_i >= 0)
 	{   
-        for (int i =0 ; i < CHANNEL_SIZE; i ++)
-        {
-            shm[threadIdx.y][threadIdx.x][i] = A[(col_i * WA + row_i)*CHANNEL_SIZE +i];
-        }
+        shm[threadIdx.y][threadIdx.x][blockIdx.z] = A[(col_i * WA + row_i)*CHANNEL_SIZE +blockIdx.z];
 		
 	}
 	else
     {        
-        for (int i =0 ; i < CHANNEL_SIZE; i ++)
-        {
-            shm[threadIdx.y][threadIdx.x][i] = 0;
-        }
+
+        shm[threadIdx.y][threadIdx.x][blockIdx.z] = 0;
             
 	}
 	__syncthreads();
 
-	if (threadIdx.y < (BLOCK_SIZE - WC + 1) && threadIdx.x < (BLOCK_SIZE - WC + 1) && row < (WB - WC + 1) && col < (WB - WC + 1))
+    if (threadIdx.y < (BLOCK_SIZE - WC + 1) && threadIdx.x < (BLOCK_SIZE - WC + 1) && row < (WB - WC + 1) && col < (WB - WC + 1))
 	{
 		for (int i = 0; i< WC;i++)
+        {
 			for (int j = 0;j<WC;j++)
-                for(int k =0; k<CHANNEL_SIZE; k++)
-                {
-                    tmp += shm[threadIdx.y + i][threadIdx.x + j][k] * C[(j*WC + i)*CHANNEL_SIZE+k];
-                }
-		B[col*WB + row] = tmp;
+            {
+                    tmp += shm[threadIdx.y + i][threadIdx.x + j][blockIdx.z] * C[(j*WC + i)*CHANNEL_SIZE+blockIdx.z];
+            }
+        }
+		B[(col*WB + row)*CHANNEL_SIZE + blockIdx.z] = tmp;
 	}
+
+
+}
+__global__ void hadamad(float* channel_expanded,float* out_val)
+{
+    
+    out_val[blockIdx.x * WB +blockIdx.y] += channel_expanded[(blockIdx.x * WB +blockIdx.y) *CHANNEL_SIZE + threadIdx.x];
+    __syncthreads();
+}
+
+void Convolution(float* A, float* B, float* C)
+{
+    float *channel_expanded;
+    cudaMalloc( &channel_expanded, WB*HB*CHANNEL_SIZE*sizeof(float) );
+
+    dim3 threads(BLOCK_SIZE, BLOCK_SIZE);
+	dim3 grid( (WB - 1) / (BLOCK_SIZE - WC + 1), (WB - 1) / (BLOCK_SIZE - WC + 1),CHANNEL_SIZE);
+    conv_flat <<<grid,threads>>>(A, channel_expanded,C);
+
+    hadamad <<<grid,CHANNEL_SIZE>>>(channel_expanded, B);
+
 }
 
 void randomInit(float* data, int size)
 {
+    
 	for (int i = 0; i < size; ++i)
 		data[i] = rand() / (float)RAND_MAX;
 }
@@ -74,9 +93,9 @@ __host__ int main(void)
 
     cudaMemcpy(da,h_a,sizeof(h_a),cudaMemcpyHostToDevice);
     cudaMemcpy(db,h_b,sizeof(h_b),cudaMemcpyHostToDevice);
-    dim3 threads(BLOCK_SIZE, BLOCK_SIZE);
-	dim3 grid((WB - 1) / (BLOCK_SIZE - WC + 1), (WB - 1) / (BLOCK_SIZE - WC + 1));
-    Convolution <<< grid,threads>>>(da,dc,db);
+    // dim3 threads(BLOCK_SIZE, BLOCK_SIZE);
+	// dim3 grid((WB - 1) / (BLOCK_SIZE - WC + 1), (WB - 1) / (BLOCK_SIZE - WC + 1),CHANNEL_SIZE);
+    Convolution(da,dc,db);
     
     cudaMemcpy(h_c,dc,sizeof(h_c),cudaMemcpyDeviceToHost);
 
