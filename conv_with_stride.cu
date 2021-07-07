@@ -13,7 +13,13 @@
 #define HB (HA+2*PAD - HC + 1)
 #define CHANNEL_SIZE 3
 
-__device__ void flat_conv(float* Input, float* Kernel, float* Output,int* image_size, int* kernel_size, int* pad,int* stride,int* out_w)
+__constant__  int image_size[3];
+__constant__  int kernel_size[4];
+__constant__  int pad[1];
+__constant__  int stride[1];
+
+
+__device__ void flat_conv(float* Input, float* Kernel, float* Output,/* int* image_size, int* kernel_size, int* pad,int* stride,*/int* out_w)
 {
     //__shared__ float kernel_part[kernel_size[2]][kernel_size[3]][kernel_size[1]];
     //__shared__ float kernel_part[3][3][3];
@@ -39,50 +45,70 @@ __device__ void flat_conv(float* Input, float* Kernel, float* Output,int* image_
     atomicAdd(&(Output[blockIdx.x * out_w[0] +blockIdx.y]), kernel_part[(threadIdx.y * kernel_size[3]+threadIdx.x)*kernel_size[1]+threadIdx.z]);
 }
 
-__global__ void relu(float*Input, float*Output)
-{
-    int col_idx = blockIdx.x* blockDim.x + threadIdx.x;
-    int row_idx = blockIdx.y* blockDim.y + threadIdx.y;
-    if ( (Input + blockIdx.z * blockDim.x*blockDim.y)[row_idx*gridDim.x*blockDim.x + col_idx]<0)
-    {
-        (Output + blockIdx.z * blockDim.x*blockDim.y)[row_idx*gridDim.x*blockDim.x + col_idx] = 0;
-    }
-}
-
-
-__global__ void conv(float* Input, float* Kernel, float* Output,int* image_size, int* kernel_size,int* pad,int* stride)
+__global__ void conv(float* Input, float* Kernel, float* Output/*, int* image_size, int* kernel_size, int* pad,int* stride*/)
 {   
     int out_w = (image_size[2]+2*pad[0] - kernel_size[3])/stride[0] + 1;
     int out_h = (image_size[1]+2*pad[0] - kernel_size[2])/stride[0] + 1;
     int flat_kernel_size = kernel_size[3]*kernel_size[2]*kernel_size[1];
     int flat_img_size = out_w*out_h;
-    flat_conv(Input, Kernel + flat_kernel_size*blockIdx.z , Output + flat_img_size*blockIdx.z, image_size, kernel_size, pad, stride, &out_w);
+    flat_conv(Input, Kernel + flat_kernel_size*blockIdx.z , Output + flat_img_size*blockIdx.z, /* image_size, kernel_size, pad, stride,*/ &out_w);
+
 }
 
+__global__ void relu(float*Input)
+{
+    int col_idx = blockIdx.x* blockDim.x + threadIdx.x;
+    int row_idx = blockIdx.y* blockDim.y + threadIdx.y;
+    if ( (Input + blockIdx.z * blockDim.x*blockDim.y)[row_idx*gridDim.x*blockDim.x + col_idx]<0)
+    {
+        (Input + blockIdx.z * blockDim.x*blockDim.y)[row_idx*gridDim.x*blockDim.x + col_idx] = 0;
+    }
+}
+
+
+__host__ float* convolution_relu(float* Input, float* Kernel, int* h_image_size, int* h_kernel_size, int h_pad,int h_stride)
+{
+    int out_w = (h_image_size[2]+2*h_pad - h_kernel_size[3])/h_stride + 1;
+    int out_h = (h_image_size[1]+2*h_pad - h_kernel_size[2])/h_stride + 1;
+    int flat_kernel_size = h_kernel_size[3]* h_kernel_size[2]* h_kernel_size[1]*sizeof(float);
+    float* Output;
+    
+    cudaMemcpyToSymbol(image_size,h_image_size,sizeof(int)*3);
+    cudaMemcpyToSymbol(kernel_size,h_kernel_size,sizeof(int)*4);
+    cudaMemcpyToSymbol(pad,&h_pad,sizeof(int));
+    cudaMemcpyToSymbol(stride,&h_stride,sizeof(int));
+    cudaMalloc((void***)&Output,out_w*out_h*h_kernel_size[0]*sizeof(float));
+    
+    dim3 threads_c(h_kernel_size[3], h_kernel_size[2], h_kernel_size[1]);
+	dim3 grid_c(out_w,out_h,h_kernel_size[0]);
+
+    conv <<< grid_c,threads_c,flat_kernel_size>>>(Input,Kernel,Output);
+
+    dim3 threads_r(32,32);
+	dim3 grid_r(out_w/32,out_h/32,h_kernel_size[0]);
+    relu <<<grid_r,threads_r >>>(coimg);
+    
+    return Output;
+}
+
+
+        // dim3 threads_r(32,32);
+	// dim3 grid_r(out_size[2]/32,out_size[1]/32,out_size[0]);
+    // relu <<<grid_r,threads_r >>>(coimg);
+}
+
+//// HOST /////
 void randomInit(float* data, int size)
 {
     
 	for (int i = 0; i < size; ++i)
-		data[i] = (rand() / (float)RAND_MAX) -0.5;
+		data[i] = (rand() / (float)RAND_MAX) +0.5;
 }
 __host__ int main(void)
 {
 
-    // float h_a[3][64][64] ={0.0};
-    // h_a[0][0][0] = 2.1;
-    // h_a[1][0][0] = 2.1;
-    // h_a[2][0][0] = 2.1;
-    // float h_b[2][3][3][3] ={1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
-    //                         1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
-    //                         1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
-    //                         2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,
-    //                         2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,
-    //                         2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0};
-
-    // float h_c[2][64][64] ={0.0};
-    int kernel_size[4] ={2,3,3,3}; //O I H W;
-    int image_size[3] = {3,64,64}; //  O H W;
-    int out_size[3] = {2,32,32};
+    int h_kernel_size[4] ={2,3,3,3}; //O I H W;
+    int h_image_size[3] = {3,64,64}; //  O H W;
 
     float* h_a; float *h_b; float* h_c;
 
@@ -96,42 +122,22 @@ __host__ int main(void)
     
     randomInit(h_a,3*64*64);
     randomInit(h_b,2*3*3*3);
-    int pad = 1;
-    int stride = 2;
+    int h_pad = 1;
+    int h_stride = 2;
+
+
 
     float *cimg;
     float *coimg;
     float *ckernel;
-    int * cimg_size;
-    int * ckernel_size;
-    int * cpad;
-    int * cstride;
     cudaMalloc((void***)&cimg,h_a_size);
     cudaMalloc((void***)&ckernel,h_b_size);
-    cudaMalloc((void***)&coimg,h_c_size);
-    cudaMalloc(&cimg_size,sizeof(image_size));
-    cudaMalloc(&ckernel_size,sizeof(kernel_size));
-    cudaMalloc(&cpad,sizeof(int));
-    cudaMalloc(&cstride,sizeof(int));
 
     cudaMemcpy(cimg,h_a,h_a_size,cudaMemcpyHostToDevice);
     cudaMemcpy(ckernel,h_b,h_b_size,cudaMemcpyHostToDevice);
-    cudaMemcpy(cimg_size,image_size,sizeof(image_size),cudaMemcpyHostToDevice);
-    cudaMemcpy(ckernel_size,kernel_size,sizeof(kernel_size),cudaMemcpyHostToDevice);
-    cudaMemcpy(cpad,&pad,sizeof(int),cudaMemcpyHostToDevice);
-    cudaMemcpy(cstride,&stride,sizeof(int),cudaMemcpyHostToDevice);
 
-    dim3 threads(kernel_size[3], kernel_size[2], kernel_size[1]);
-	dim3 grid(out_size[2],out_size[1],out_size[0]);
     clock_t start = clock(); 
-
-
-    int flat_kernel_size = kernel_size[3]* kernel_size[2]* kernel_size[1]*sizeof(float);
-    conv <<< grid,threads,flat_kernel_size>>>(cimg,ckernel,coimg,cimg_size,ckernel_size,cpad,cstride);
-    dim3 threads_r(32,32);
-	dim3 grid_r(out_size[2]/32,out_size[1]/32,out_size[0]);
-    relu <<<grid_r,threads_r >>>(coimg,coimg);
-    //Convolution <<< grid,threads>>>(cimg,ckernel,coimg,cimg_size,ckernel_size);
+    coimg = convolution_relu(cimg,ckernel,h_image_size,h_kernel_size,h_pad,h_stride);
 
     clock_t end = clock();
     cudaMemcpy(h_c,coimg,h_c_size,cudaMemcpyDeviceToHost);
@@ -155,10 +161,10 @@ __host__ int main(void)
     cudaFree(cimg);
     cudaFree(ckernel);
     cudaFree(coimg);
-    cudaFree(cimg_size);
-    cudaFree(ckernel_size);
-    cudaFree(cpad);
-    cudaFree(cstride);
+    //cudaFree(cimg_size);
+    //cudaFree(ckernel_size);
+    //cudaFree(cpad);
+    //cudaFree(cstride);
     
     
     printf("%f",(float)(end - start)/CLOCKS_PER_SEC);
