@@ -49,24 +49,44 @@ __global__ void conv(float* Input, float* Kernel, float* Output,int* image_size,
     flat_conv(Input, Kernel + flat_kernel_size*blockIdx.z , Output + flat_img_size*blockIdx.z, image_size, kernel_size, pad,&out_w);
 }
 
-
+void randomInit(float* data, int size)
+{
+    
+	for (int i = 0; i < size; ++i)
+		data[i] = (rand() / (float)RAND_MAX);
+}
 __host__ int main(void)
 {
 
-    float h_a[3][64][64] ={0.0};
-    h_a[0][0][0] = 2.1;
-    h_a[1][0][0] = 2.1;
-    h_a[2][0][0] = 2.1;
-    float h_b[2][3][3][3] ={1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
-                            1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
-                            1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
-                            2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,
-                            2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,
-                            2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0};
+    // float h_a[3][64][64] ={0.0};
+    // h_a[0][0][0] = 2.1;
+    // h_a[1][0][0] = 2.1;
+    // h_a[2][0][0] = 2.1;
+    // float h_b[2][3][3][3] ={1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
+    //                         1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
+    //                         1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
+    //                         2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,
+    //                         2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,
+    //                         2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0,2.0};
 
-    float h_c[2][64][64] ={0.0};
+    // float h_c[2][64][64] ={0.0};
     int kernel_size[4] ={2,3,3,3}; //O I H W;
     int image_size[3] = {3,64,64}; //  O H W;
+
+    float* h_a; float *h_b; float* h_c;
+
+    int h_a_size = sizeof(float)*3*64*64;
+    int h_b_size = sizeof(float)*3*64*64;
+    int h_c_size = sizeof(float)*3*64*64;
+
+    h_a = (float*)malloc(h_a_size);
+    h_b = (float*)malloc(h_b_size);
+    h_c = (float*)malloc(h_c_size);
+    
+    randomInit(h_a,3*64*64);
+    randomInit(h_b,2*3*3*3);
+    randomInit(h_c,2*64*64);
+
     int pad = 1;
 
     float *cimg;
@@ -75,15 +95,15 @@ __host__ int main(void)
     int * cimg_size;
     int * ckernel_size;
     int * cpad;
-    cudaMalloc((void***)&cimg,sizeof(h_a));
-    cudaMalloc((void***)&ckernel,sizeof(h_b));
-    cudaMalloc((void***)&coimg,sizeof(h_c));
+    cudaMalloc((void***)&cimg,h_a_size);
+    cudaMalloc((void***)&ckernel,h_b_size);
+    cudaMalloc((void***)&coimg,h_c_size);
     cudaMalloc(&cimg_size,sizeof(image_size));
     cudaMalloc(&ckernel_size,sizeof(kernel_size));
     cudaMalloc(&cpad,sizeof(int));
 
-    cudaMemcpy(cimg,h_a,sizeof(h_a),cudaMemcpyHostToDevice);
-    cudaMemcpy(ckernel,h_b,sizeof(h_b),cudaMemcpyHostToDevice);
+    cudaMemcpy(cimg,h_a,h_a_size,cudaMemcpyHostToDevice);
+    cudaMemcpy(ckernel,h_b,h_b_size,cudaMemcpyHostToDevice);
     cudaMemcpy(cimg_size,image_size,sizeof(image_size),cudaMemcpyHostToDevice);
     cudaMemcpy(ckernel_size,kernel_size,sizeof(kernel_size),cudaMemcpyHostToDevice);
     cudaMemcpy(cpad,&pad,sizeof(int),cudaMemcpyHostToDevice);
@@ -92,23 +112,35 @@ __host__ int main(void)
 	dim3 grid(image_size[2],image_size[1],kernel_size[0]);
     clock_t start = clock(); 
 
-    int flat_kernel_size = kernel_size[3]* kernel_size[2]* kernel_size[1];
+    int flat_kernel_size = kernel_size[3]* kernel_size[2]* kernel_size[1]*sizeof(float);
     conv <<< grid,threads,flat_kernel_size>>>(cimg,ckernel,coimg,cimg_size,ckernel_size,cpad);
     //Convolution <<< grid,threads>>>(cimg,ckernel,coimg,cimg_size,ckernel_size);
 
     clock_t end = clock();
-    cudaMemcpy(h_c,coimg,sizeof(h_c),cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_c,coimg,h_c_size,cudaMemcpyDeviceToHost);
 
-    for(int j =0; j < WB;j ++)
-    {
-        for(int k =0; k < WB;k ++)
-        {
-            printf("%.1f ",h_c[1][k][j]);
-        }
-        printf("\n");   
-    }
-    printf("\n");
+    int cnt = 0;
+    // for(int i = 0;i < 2; i++)
+    // {
+    //     for(int j =0; j < WB;j ++)
+    //     {
+    //         for(int k =0; k < WB;k ++)
+    //         {
+    //             printf("%.0f ",h_c[cnt]);
+    //             cnt +=1;
+    //         }
+    //         printf("\n");   
+    //     }
+    //     printf("\n");
+    // }
 
-
+    cudaFree(cimg);
+    cudaFree(ckernel);
+    cudaFree(coimg);
+    cudaFree(cimg_size);
+    cudaFree(ckernel_size);
+    cudaFree(cpad);
+    
+    
     printf("%f",(float)(end - start)/CLOCKS_PER_SEC);
 }
