@@ -1,22 +1,7 @@
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#define IMW 64   
-#define IMH 64     
-#define IMC 3 
- 
-#define WO 3
-#define WI 3
-#define WH 3
-#define WW 3
 
-#define PAD 1
-#define STIRDE 2
 
-#define OIMW ((IMW+2*PAD-WW)/STIRDE+1) 
-#define OIMH ((IMH+2*PAD-WH)/STIRDE+1) 
+#include "model.cuh"
+
 
 __constant__  int image_size[3];
 __constant__  int kernel_size[4];
@@ -86,8 +71,10 @@ __host__ float* convolution_relu(float* Input, float* Kernel, int* h_image_size,
 
     conv <<< grid_c,threads_c,flat_kernel_size>>>(Input,Kernel,Output);
 
-    dim3 threads_r(32,32);
-	dim3 grid_r(out_w/32,out_h/32,h_kernel_size[0]);
+    int relu_t_wsize = h_image_size[2] > 32 ? 32: out_w;
+    int relu_t_hsize = h_image_size[1] > 32 ? 32: out_h;
+    dim3 threads_r(relu_t_wsize,relu_t_hsize);
+	dim3 grid_r(out_w/relu_t_wsize,out_h/relu_t_hsize,h_kernel_size[0]);
     relu <<<grid_r,threads_r >>>(Output);
     
     cudaFree(Input);
@@ -157,89 +144,58 @@ __host__ float* maxpooling(float* Input, int* h_image_size, int h_kernel_size)
 }
 
 
-//// HOST /////
-void randomInit(float* data, int size)
+__global__ void fc(float* Input,float* Kernel, float* Output)
 {
-    
-	for (int i = 0; i < size; ++i)
-		data[i] = (rand() / (float)RAND_MAX) -0.5;
-}
-void OneInit(float* data, int size)
-{
-    
-	for (int i = 0; i < size; ++i)
-		data[i] = 1;
-}
-__host__ int main(void)
-{
+    extern __shared__ float kernel_part[];
+    kernel_part[threadIdx.x] = Input[threadIdx.x] * Kernel[blockDim.x*blockIdx.x+threadIdx.x];
 
-    int h_kernel_size[4] ={WO,WI,WH,WW}; //O I H W;
-    int h_image_size[3] = {IMC,IMH,IMW}; //  O H W;
+    atomicAdd(&Output[blockIdx.x],kernel_part[threadIdx.x]);
+}
 
+__host__ float* fully_connected(float* Input,float* Kernel,int* kernel_size)
+{   // Weight size = (Out channel, In channel)
+    
+    float* Output;
+    cudaMalloc((void**)&Output,kernel_size[0]*sizeof(float));
+    int shm_len = kernel_size[1]*sizeof(float);
+    dim3 thread(kernel_size[1]);
+    dim3 grid(kernel_size[0]);
+    fc<<<grid,thread,shm_len>>>(Input,Kernel,Output);
+    return Output;
+}
+
+
+
+
+/*
+__host__ int main()
+{
     float* h_img; float *h_kernel; float* h_out;
-
-    int h_img_len = sizeof(float)*IMC*IMH*IMW;
-    int h_kernel_len = sizeof(float)*WO*WI*WH*WW;
-    int h_out_len = sizeof(float)*WO*OIMH*OIMW;
+    int h_img_len = sizeof(float)*10;
+    int h_kernel_len = sizeof(float)*10*10;
+    int h_out_len = sizeof(float)*10;
 
     h_img = (float*)malloc(h_img_len);
     h_kernel = (float*)malloc(h_kernel_len);
     h_out = (float*)malloc(h_out_len);
-    
-    //h_img[400] = 1; h_img[400+IMH*IMW] =1; h_img[400+2*IMH*IMW] =1;
-    randomInit(h_img,h_img_len/sizeof(float));
     OneInit(h_kernel,h_kernel_len/sizeof(float));
-    int h_pad = PAD;
-    int h_stride = STIRDE;
-
-
-
+    OneInit(h_img,h_img_len/sizeof(float));
+    h_kernel[0] = 10;
     float *cimg;
-    
     float *ckernel;
-    cudaMalloc((void***)&cimg,h_img_len);
-    cudaMalloc((void***)&ckernel,h_kernel_len);
-
+    cudaMalloc((void**)&cimg,h_img_len);
+    cudaMalloc((void**)&ckernel,h_kernel_len);
     cudaMemcpy(cimg,h_img,h_img_len,cudaMemcpyHostToDevice);
     cudaMemcpy(ckernel,h_kernel,h_kernel_len,cudaMemcpyHostToDevice);
-
-    clock_t start = clock();
-    float *coimg_1;
-    coimg_1 = convolution_relu(cimg,ckernel,h_image_size,h_kernel_size,1,1);
-    float *coimg_2;
-    coimg_2 = maxpooling(coimg_1,h_image_size,2);
-    
-    h_image_size[0] = 3;h_image_size[1] = 32;h_image_size[2] = 32;
-    
-    float *coimg_3;
-    coimg_3 = convolution_relu(coimg_2,ckernel,h_image_size,h_kernel_size,1,1);
-    clock_t end = clock();
-    cudaMemcpy(h_out,coimg_3,h_out_len,cudaMemcpyDeviceToHost);
-
-    int cnt = 0;
-    for(int i = 0;i < WO; i++)
+    int w_s[2] = {10,10};
+    float *cout;
+    cout = fully_connected(cimg,ckernel,w_s);
+    cudaMemcpy(h_out,cout,h_out_len,cudaMemcpyDeviceToHost);
+    for(int i =0; i <10; i++)
     {
-        for(int j =0; j < OIMH;j ++)
-        {
-            for(int k =0; k < OIMW;k ++)
-            {
-                //printf("%.0f ",h_c[cnt]);
-                printf("%.1f ",h_out[cnt]);
-                cnt +=1;
-            }
-            printf("\n");   
-        }
-        printf("\n");
+        printf("%.0f ",h_out[i]);
     }
 
-    //cudaFree(cimg);
-    cudaFree(ckernel);
-    cudaFree(coimg_2);
-    //cudaFree(cimg_size);
-    //cudaFree(ckernel_size);
-    //cudaFree(cpad);
-    //cudaFree(cstride);
-    
-    
-    printf("%f",(float)(end - start)/CLOCKS_PER_SEC);
+
 }
+*/
