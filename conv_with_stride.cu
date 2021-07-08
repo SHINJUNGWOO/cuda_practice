@@ -90,7 +90,7 @@ __host__ float* convolution_relu(float* Input, float* Kernel, int* h_image_size,
 	dim3 grid_r(out_w/32,out_h/32,h_kernel_size[0]);
     relu <<<grid_r,threads_r >>>(Output);
     
-    //cudaFree(Input);
+    cudaFree(Input);
     //cudaFree(Kernel);
     return Output;
 }
@@ -98,24 +98,46 @@ __host__ float* convolution_relu(float* Input, float* Kernel, int* h_image_size,
 __global__ void g_maxpooling(float* Input,float* Output)
 {
     
-    int row_idx = blockIdx.y*blockDim.x +threadIdx.x;
+    int row_idx = blockIdx.y*blockDim.y +threadIdx.y;
+    int col_idx = blockIdx.x*blockDim.x +threadIdx.x;
     int col_len = gridDim.x*blockDim.x;
     int row_len = gridDim.y*blockDim.x;
     int flat_img_size = col_len*row_len;
-    int bleft_start_idx = row_idx*col_len + blockIdx.x*blockDim.x +flat_img_size*threadIdx.y;
     extern __shared__ float kernel_part[];
     //size of double of kernel
-    kernel_part[2*threadIdx.y+ threadIdx.x] =  Input[bleft_start_idx] >
-                                               Input[bleft_start_idx+1] ?
-                                               Input[bleft_start_idx]:
-                                               Input[bleft_start_idx+1];
+
+    int shm_idx = blockDim.x*threadIdx.y + threadIdx.x +blockDim.x*blockDim.y*threadIdx.z;
+
+    kernel_part[shm_idx] = Input[row_idx*col_len + col_idx + threadIdx.z*flat_img_size];
     __syncthreads();
-    if(threadIdx.x ==0)
-    {
-        Output[blockIdx.y*gridDim.x+blockIdx.x + threadIdx.y*gridDim.x*gridDim.y] = kernel_part[2*threadIdx.y]> kernel_part[2*threadIdx.y+1]?
-                                                                          kernel_part[2*threadIdx.y]: kernel_part[2*threadIdx.y+1];
+    for (int size = blockDim.x/2; size>0; size=size/2) { 
+        if (threadIdx.x < size)
+        {
+            kernel_part[shm_idx] =  kernel_part[shm_idx] >
+                                    kernel_part[shm_idx + size] ?
+                                    kernel_part[shm_idx] :
+                                    kernel_part[shm_idx + size] ;
+           
+
+        } 
+        __syncthreads();
     }
-    __syncthreads();
+    for (int size = blockDim.y/2; size>0; size=size/2) { 
+        if (threadIdx.y < size)
+        {
+            kernel_part[shm_idx] =  kernel_part[shm_idx] >
+                                    kernel_part[shm_idx + size*blockDim.x] ?
+                                    kernel_part[shm_idx] :
+                                    kernel_part[shm_idx + size*blockDim.x] ;
+            
+        }
+        __syncthreads();
+
+    }
+    if(threadIdx.x == 0 && threadIdx.y == 0)
+    {
+        Output[blockIdx.y*gridDim.x+blockIdx.x + threadIdx.z*gridDim.x*gridDim.y] = kernel_part[blockDim.x*blockDim.y*threadIdx.z];
+    }
 }
 __host__ float* maxpooling(float* Input, int* h_image_size, int h_kernel_size)
 {
@@ -123,11 +145,13 @@ __host__ float* maxpooling(float* Input, int* h_image_size, int h_kernel_size)
     int col_len = h_image_size[2]/h_kernel_size;
     int row_len = h_image_size[1]/h_kernel_size;
     cudaMalloc((void***)&Output,row_len*col_len*h_image_size[0]*sizeof(float));
-    dim3 threads(2,h_image_size[0]);
+    dim3 threads(h_kernel_size,h_kernel_size,h_image_size[0]);
 	dim3 grid(col_len,row_len);
-    int shm_len = 2*h_image_size[0]*sizeof(float);
+    int shm_len = h_image_size[0]*h_kernel_size*h_kernel_size*sizeof(float);
 
     g_maxpooling<<<grid,threads,shm_len>>>(Input,Output);
+
+    cudaFree(Input);
     return Output;
 
 }
@@ -138,7 +162,13 @@ void randomInit(float* data, int size)
 {
     
 	for (int i = 0; i < size; ++i)
-		data[i] =1;// (rand() / (float)RAND_MAX) +0.5;
+		data[i] = (rand() / (float)RAND_MAX) -0.5;
+}
+void OneInit(float* data, int size)
+{
+    
+	for (int i = 0; i < size; ++i)
+		data[i] = 1;
 }
 __host__ int main(void)
 {
@@ -156,11 +186,9 @@ __host__ int main(void)
     h_kernel = (float*)malloc(h_kernel_len);
     h_out = (float*)malloc(h_out_len);
     
-    h_img[400] = 1;
-    h_img[400+IMH*IMW] =1;
-    h_img[400+2*IMH*IMW] =1;
-    //randomInit(h_img,h_img_len/sizeof(float));
-    randomInit(h_kernel,h_kernel_len/sizeof(float));
+    //h_img[400] = 1; h_img[400+IMH*IMW] =1; h_img[400+2*IMH*IMW] =1;
+    randomInit(h_img,h_img_len/sizeof(float));
+    OneInit(h_kernel,h_kernel_len/sizeof(float));
     int h_pad = PAD;
     int h_stride = STIRDE;
 
@@ -178,12 +206,15 @@ __host__ int main(void)
     clock_t start = clock();
     float *coimg_1;
     coimg_1 = convolution_relu(cimg,ckernel,h_image_size,h_kernel_size,1,1);
-    coimg_1 = maxpooling(cimg,h_image_size,2);
+    float *coimg_2;
+    coimg_2 = maxpooling(coimg_1,h_image_size,2);
+    
     h_image_size[0] = 3;h_image_size[1] = 32;h_image_size[2] = 32;
-    float *coimg;
-    coimg = convolution_relu(coimg_1,ckernel,h_image_size,h_kernel_size,1,1);
+    
+    float *coimg_3;
+    coimg_3 = convolution_relu(coimg_2,ckernel,h_image_size,h_kernel_size,1,1);
     clock_t end = clock();
-    cudaMemcpy(h_out,coimg,h_out_len,cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_out,coimg_3,h_out_len,cudaMemcpyDeviceToHost);
 
     int cnt = 0;
     for(int i = 0;i < WO; i++)
@@ -201,9 +232,9 @@ __host__ int main(void)
         printf("\n");
     }
 
-    cudaFree(cimg);
+    //cudaFree(cimg);
     cudaFree(ckernel);
-    cudaFree(coimg_1);
+    cudaFree(coimg_2);
     //cudaFree(cimg_size);
     //cudaFree(ckernel_size);
     //cudaFree(cpad);
